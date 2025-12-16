@@ -1,3 +1,5 @@
+import React from 'react';
+
 export enum GestureType {
   NONE = 'NONE',
   OPEN_PALM = 'OPEN_PALM', // Scatter/Cloud

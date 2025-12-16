@@ -5,16 +5,20 @@ import { Loader } from '@react-three/drei';
 import Experience from './components/Experience';
 import HandTracker from './components/HandTracker';
 import UIOverlay from './components/UIOverlay';
+import Home from './components/Home';
 import { GestureType, HandData } from './types';
 import { COLORS, TARGET_IMAGE_URL } from './constants';
 
+type ViewMode = 'home' | 'memory' | 'hero';
+
 function App() {
-  // 1. Reactive State
+  const [currentView, setCurrentView] = useState<ViewMode>('home');
+
+  // Shared Logic for 3D Experience
   const [currentGesture, setCurrentGesture] = useState<GestureType>(GestureType.NONE);
   const [isHandDetected, setIsHandDetected] = useState(false);
   const [imageSource, setImageSource] = useState<string>(TARGET_IMAGE_URL);
   
-  // 2. Mutable Ref (Animation/Physics)
   const handDataRef = useRef<HandData>({
     gesture: GestureType.NONE,
     x: 0.5,
@@ -27,7 +31,16 @@ function App() {
   const [shouldStartCamera, setShouldStartCamera] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Callback optimized to only update state when necessary
+  // Reset state when changing views
+  const navigateTo = (view: ViewMode) => {
+      // Reset camera when leaving an experience
+      if (view === 'home') {
+          setShouldStartCamera(false);
+          setCameraStatus('idle');
+      }
+      setCurrentView(view);
+  };
+
   const handleHandUpdate = useCallback((data: HandData) => {
     handDataRef.current = data;
     setCurrentGesture(prev => prev !== data.gesture ? data.gesture : prev);
@@ -38,7 +51,7 @@ function App() {
     setCameraStatus(status);
     if (status === 'error') {
         setCameraError(message);
-        setShouldStartCamera(false); // Reset trigger on error
+        setShouldStartCamera(false); 
     }
   }, []);
 
@@ -50,16 +63,14 @@ function App() {
       setShouldStartCamera(false);
       setCameraStatus('idle');
       setIsHandDetected(false);
-      handDataRef.current = { gesture: GestureType.NONE, x: 0.5, y: 0.5, isDetected: false };
-      setCurrentGesture(GestureType.NONE);
   };
 
   const handleScreenshot = () => {
     const canvas = document.querySelector('canvas');
     if (canvas) {
       const link = document.createElement('a');
-      link.setAttribute('download', 'particle-memory.png');
-      link.setAttribute('href', canvas.toDataURL('image/png').replace('image/png', 'image/octet-stream'));
+      link.setAttribute('download', 'capture.png');
+      link.setAttribute('href', canvas.toDataURL('image/png'));
       link.click();
     }
   };
@@ -69,18 +80,23 @@ function App() {
       setImageSource(objectUrl);
   };
 
+  // --- RENDER ---
+
+  if (currentView === 'home') {
+      return <Home onNavigate={navigateTo} />;
+  }
+
+  // Common Experience Layout for both 'memory' and 'hero'
+  const isHero = currentView === 'hero';
+
   return (
     <div className="relative w-full h-screen bg-black overflow-hidden select-none">
       
-      {/* 1. 3D Scene Layer */}
+      {/* 3D Scene */}
       <div className="absolute inset-0 z-10">
         <Canvas
           dpr={[1, 2]} 
-          gl={{ 
-            antialias: false, 
-            toneMapping: 3,
-            preserveDrawingBuffer: true // Required for screenshot
-          }} 
+          gl={{ antialias: false, toneMapping: 3, preserveDrawingBuffer: true }} 
           shadows
           ref={canvasRef}
         >
@@ -96,8 +112,16 @@ function App() {
         </Canvas>
       </div>
 
-      {/* 2. UI & Instruction Layer */}
+      {/* Shared Logic Layer */}
+      <HandTracker 
+        onHandUpdate={handleHandUpdate} 
+        onCameraStatusChange={handleCameraStatusChange}
+        shouldStart={shouldStartCamera}
+      />
+
+      {/* Dynamic UI Overlay based on Mode */}
       <UIOverlay 
+        variant={isHero ? 'hero' : 'standard'}
         currentGesture={currentGesture}
         isHandDetected={isHandDetected}
         cameraStatus={cameraStatus}
@@ -106,21 +130,14 @@ function App() {
         onStopCamera={triggerCameraStop}
         onScreenshot={handleScreenshot}
         onUploadImage={handleImageUpload}
-      />
-
-      {/* 3. Logic Layer */}
-      <HandTracker 
-        onHandUpdate={handleHandUpdate} 
-        onCameraStatusChange={handleCameraStatusChange}
-        shouldStart={shouldStartCamera}
+        onBack={() => navigateTo('home')}
       />
       
-      {/* 4. Loader */}
       <Loader 
         containerStyles={{ background: 'black' }} 
         innerStyles={{ width: '200px', background: '#333' }} 
-        barStyles={{ background: COLORS.METALLIC_GOLD }}
-        dataStyles={{ color: COLORS.WARM_WHITE, fontFamily: 'Cinzel' }}
+        barStyles={{ background: 'white' }}
+        dataStyles={{ color: 'white', fontFamily: 'Cinzel' }}
       />
     </div>
   );
