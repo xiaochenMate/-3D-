@@ -37,3 +37,17 @@ declare global {
     }
   }
 }
+
+declare module 'react' {
+  namespace JSX {
+    interface IntrinsicElements {
+      points: any;
+      bufferGeometry: any;
+      bufferAttribute: any;
+      pointsMaterial: any;
+      ambientLight: any;
+      color: any;
+      fog: any;
+    }
+  }
+}
