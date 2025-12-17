@@ -28,6 +28,15 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onCameraStatusC
   useEffect(() => {
     let active = true;
 
+    // Check for HTTPS environment (Required for camera)
+    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      const msg = "摄像头需要HTTPS环境";
+      console.warn(msg);
+      setError(msg);
+      onCameraStatusChange?.('error', "请使用HTTPS访问");
+      return;
+    }
+
     const setupMediaPipe = async () => {
       try {
         const vision = await FilesetResolver.forVisionTasks(
@@ -71,6 +80,7 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onCameraStatusC
   // Monitor shouldStart
   useEffect(() => {
     if (shouldStart) {
+        // Only attempt start if we are not already loading/streaming and AI is ready
         if (!loading && landmarkerRef.current && !videoRef.current?.srcObject) {
             startCamera();
         }
@@ -97,29 +107,68 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onCameraStatusC
     setError(null);
     onCameraStatusChange?.('loading');
     
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
+    // Define fallback constraints. 
+    // Mobile browsers can fail on 'ideal' constraints if the camera doesn't support that exact ratio.
+    const constraintsList = [
+      // 1. Preferred: Front camera, VGA quality (balanced for performance/quality)
+      { 
         video: { 
-            facingMode: 'user',
-            width: { ideal: 640 }, 
-            height: { ideal: 480 },
-            frameRate: { ideal: 30 }
+          facingMode: 'user',
+          width: { ideal: 640 }, 
+          height: { ideal: 480 },
+          frameRate: { ideal: 30 }
         } 
-      });
-      videoRef.current.srcObject = stream;
-      videoRef.current.onloadeddata = () => {
-          predictWebcam();
-          onCameraStatusChange?.('active');
-          if (window.innerWidth < 768) setIsMinimized(true);
-      };
-    } catch (err: any) {
-      console.error("Camera error:", err);
-      let msg = "Camera Error";
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-          msg = "Permission Denied";
+      },
+      // 2. Fallback: Just front camera (let browser decide resolution)
+      { 
+        video: { facingMode: 'user' } 
+      },
+      // 3. Last Resort: Any camera (sometimes 'user' fails on desktop w/o webcam or specific Android webviews)
+      { 
+        video: true 
       }
-      setError(msg);
-      onCameraStatusChange?.('error', msg === "Permission Denied" ? "权限拒绝" : "摄像头错误");
+    ];
+
+    let stream: MediaStream | null = null;
+    let lastError: any = null;
+
+    // Try constraints in order
+    for (const constraints of constraintsList) {
+        try {
+            stream = await navigator.mediaDevices.getUserMedia(constraints);
+            if (stream) break; // Success
+        } catch (err) {
+            console.warn("Camera constraint failed:", constraints, err);
+            lastError = err;
+        }
+    }
+
+    if (stream) {
+        try {
+            videoRef.current.srcObject = stream;
+            // Wait for video to actually be ready
+            videoRef.current.onloadeddata = () => {
+                predictWebcam();
+                onCameraStatusChange?.('active');
+                if (window.innerWidth < 768) setIsMinimized(true);
+            };
+            // Force play (needed for some iOS versions)
+            await videoRef.current.play();
+        } catch (e) {
+            console.error("Video play error:", e);
+        }
+    } else {
+        console.error("All camera attempts failed.", lastError);
+        let msg = "Camera Error";
+        if (lastError?.name === 'NotAllowedError' || lastError?.name === 'PermissionDeniedError') {
+            msg = "Permission Denied";
+        } else if (lastError?.name === 'NotFoundError') {
+            msg = "No Camera Found";
+        } else {
+            msg = "摄像头启动失败";
+        }
+        setError(msg);
+        onCameraStatusChange?.('error', msg === "Permission Denied" ? "权限被拒绝，请在设置中允许" : msg);
     }
   };
 
