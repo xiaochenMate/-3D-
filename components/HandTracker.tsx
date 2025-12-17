@@ -13,7 +13,7 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onCameraStatusC
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null); // Visible error for mobile debugging
   const landmarkerRef = useRef<HandLandmarker | null>(null);
   const requestRef = useRef<number>(0);
   const lastVideoTimeRef = useRef<number>(-1);
@@ -28,16 +28,25 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onCameraStatusC
   useEffect(() => {
     let active = true;
 
-    // Check for HTTPS environment (Required for camera)
-    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-      const msg = "摄像头需要HTTPS环境";
-      console.warn(msg);
-      setError(msg);
-      onCameraStatusChange?.('error', "请使用HTTPS访问");
-      return;
-    }
-
     const setupMediaPipe = async () => {
+      // 1. Check Protocol (HTTPS is mandatory for mobile camera)
+      if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        const msg = "安全限制: 请使用 HTTPS 协议访问 (Security: HTTPS required)";
+        console.error(msg);
+        setError(msg);
+        onCameraStatusChange?.('error', msg);
+        return;
+      }
+
+      // 2. Check Browser Support
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        const msg = "您的浏览器不支持摄像头访问 (navigator.mediaDevices missing)";
+        console.error(msg);
+        setError(msg);
+        onCameraStatusChange?.('error', msg);
+        return;
+      }
+
       try {
         const vision = await FilesetResolver.forVisionTasks(
           "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
@@ -52,9 +61,9 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onCameraStatusC
           },
           runningMode: "VIDEO",
           numHands: 1,
-          minHandDetectionConfidence: 0.6,
-          minHandPresenceConfidence: 0.6,
-          minTrackingConfidence: 0.6
+          minHandDetectionConfidence: 0.5, // Slightly lower for mobile
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5
         });
 
         landmarkerRef.current = landmarker;
@@ -62,8 +71,9 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onCameraStatusC
       } catch (error: any) {
         console.error("Error initializing MediaPipe:", error);
         setLoading(false);
-        setError("AI Load Failed");
-        onCameraStatusChange?.('error', "AI加载失败");
+        const errorMsg = `AI加载失败: ${error.message || 'Unknown error'}`;
+        setError(errorMsg);
+        onCameraStatusChange?.('error', errorMsg);
       }
     };
 
@@ -107,23 +117,21 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onCameraStatusC
     setError(null);
     onCameraStatusChange?.('loading');
     
-    // Define fallback constraints. 
-    // Mobile browsers can fail on 'ideal' constraints if the camera doesn't support that exact ratio.
+    // Constraint Strategy: From Best to Worst
     const constraintsList = [
-      // 1. Preferred: Front camera, VGA quality (balanced for performance/quality)
+      // 1. Mobile Friendly (Front Camera, Low Res for speed)
       { 
         video: { 
           facingMode: 'user',
-          width: { ideal: 640 }, 
-          height: { ideal: 480 },
-          frameRate: { ideal: 30 }
+          width: { ideal: 480 },  // Lower resolution is safer on mobile
+          height: { ideal: 640 }
         } 
       },
-      // 2. Fallback: Just front camera (let browser decide resolution)
+      // 2. Generic Front
       { 
         video: { facingMode: 'user' } 
       },
-      // 3. Last Resort: Any camera (sometimes 'user' fails on desktop w/o webcam or specific Android webviews)
+      // 3. Absolute fallback (Any camera)
       { 
         video: true 
       }
@@ -132,11 +140,10 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onCameraStatusC
     let stream: MediaStream | null = null;
     let lastError: any = null;
 
-    // Try constraints in order
     for (const constraints of constraintsList) {
         try {
             stream = await navigator.mediaDevices.getUserMedia(constraints);
-            if (stream) break; // Success
+            if (stream) break; 
         } catch (err) {
             console.warn("Camera constraint failed:", constraints, err);
             lastError = err;
@@ -146,29 +153,43 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onCameraStatusC
     if (stream) {
         try {
             videoRef.current.srcObject = stream;
-            // Wait for video to actually be ready
-            videoRef.current.onloadeddata = () => {
-                predictWebcam();
-                onCameraStatusChange?.('active');
-                if (window.innerWidth < 768) setIsMinimized(true);
+            
+            // Critical for iOS Safari: 'onloadedmetadata' is often safer than 'onloadeddata'
+            videoRef.current.onloadedmetadata = async () => {
+                try {
+                    await videoRef.current?.play();
+                    predictWebcam();
+                    onCameraStatusChange?.('active');
+                    // Auto minimize on mobile to save screen space
+                    if (window.innerWidth < 768) setIsMinimized(true);
+                } catch (playErr) {
+                     console.error("Play error", playErr);
+                     // If autoplay fails (iOS battery saver?), show error
+                     setError("无法自动播放视频，请点击屏幕");
+                }
             };
-            // Force play (needed for some iOS versions)
-            await videoRef.current.play();
-        } catch (e) {
-            console.error("Video play error:", e);
+        } catch (e: any) {
+            console.error("Stream assignment error:", e);
+            setError(`视频流错误: ${e.message}`);
         }
     } else {
         console.error("All camera attempts failed.", lastError);
-        let msg = "Camera Error";
-        if (lastError?.name === 'NotAllowedError' || lastError?.name === 'PermissionDeniedError') {
-            msg = "Permission Denied";
-        } else if (lastError?.name === 'NotFoundError') {
-            msg = "No Camera Found";
-        } else {
-            msg = "摄像头启动失败";
+        let msg = "无法启动摄像头";
+        
+        if (lastError) {
+             if (lastError.name === 'NotAllowedError' || lastError.name === 'PermissionDeniedError') {
+                msg = "权限被拒绝 (Permission Denied)。请检查浏览器设置或微信权限。";
+            } else if (lastError.name === 'NotFoundError') {
+                msg = "找不到摄像头设备";
+            } else if (lastError.name === 'NotReadableError') {
+                msg = "摄像头被其他应用占用";
+            } else {
+                msg = `错误: ${lastError.name} - ${lastError.message}`;
+            }
         }
+        
         setError(msg);
-        onCameraStatusChange?.('error', msg === "Permission Denied" ? "权限被拒绝，请在设置中允许" : msg);
+        onCameraStatusChange?.('error', msg);
     }
   };
 
@@ -274,6 +295,7 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onCameraStatusC
     <div 
         className={`fixed bottom-24 md:bottom-32 left-4 z-50 transition-all duration-300 ease-in-out border border-white/10 rounded-xl overflow-hidden shadow-2xl backdrop-blur-md bg-black/40 ${isMinimized ? 'w-10 h-10 rounded-full' : 'w-48 h-36 md:w-64 md:h-48'}`}
     >
+        {/* Toggle Button */}
         <button 
             onClick={() => setIsMinimized(!isMinimized)}
             className="absolute top-1 right-1 z-20 w-6 h-6 md:w-8 md:h-8 flex items-center justify-center rounded-full bg-black/50 hover:bg-white/20 text-white transition-colors"
@@ -296,26 +318,36 @@ const HandTracker: React.FC<HandTrackerProps> = ({ onHandUpdate, onCameraStatusC
                 className="absolute inset-0 w-full h-full object-cover transform -scale-x-100" 
                 playsInline 
                 muted 
-                autoPlay
+                // Don't autoPlay here immediately, control it in logic
             />
             <canvas 
                 ref={canvasRef}
                 className="absolute inset-0 w-full h-full object-cover transform -scale-x-100"
             />
             
-            {loading && shouldStart && (
+            {/* 
+                CRITICAL MOBILE ERROR DISPLAY 
+                This ensures users see why it failed on their phone screen.
+            */}
+            {error && (
+                <div className="absolute inset-0 flex items-center justify-center bg-red-900/90 p-2 text-center">
+                    <p className="text-white text-xs font-bold break-words">{error}</p>
+                </div>
+            )}
+
+            {loading && shouldStart && !error && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm">
                     <div className="w-8 h-8 border-2 border-pink-500 border-t-transparent rounded-full animate-spin"></div>
                 </div>
             )}
             
-            {!shouldStart && (
+            {!shouldStart && !error && (
                 <div className="absolute inset-0 flex items-center justify-center bg-gray-900/90 text-gray-500 text-xs uppercase tracking-widest font-cinzel">
                     摄像头关闭
                 </div>
             )}
             
-            {shouldStart && !loading && (
+            {shouldStart && !loading && !error && (
                  <div className="absolute bottom-0 w-full text-center text-[8px] text-white/50 bg-black/50 py-0.5 pointer-events-none">
                     预览
                  </div>
